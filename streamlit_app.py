@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.ensemble import IsolationForest
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -19,7 +19,7 @@ st.write(
     """
     **Upload your financial statements in CSV format.**  
     This tool will:
-    - Analyze the data using AI (Gemini)
+    - Analyze the data using AI (Gemini) for metrics and ratios
     - Perform robust financial due diligence with advanced metrics
     - Detect anomalies and outliers using multiple ML methods
     - Visualize key metrics, trends, and anomalies
@@ -29,25 +29,40 @@ st.write(
 # --- File Upload ---
 uploaded_file = st.file_uploader("Upload your financial statement (CSV)", type=["csv"])
 
+def filter_regex_case_insensitive(df, pattern):
+    """Helper to filter columns using regex, case-insensitive (avoids NDFrame.filter case= bug)."""
+    import re
+    cols = [col for col in df.columns if re.search(pattern, col, re.IGNORECASE)]
+    return df[cols] if cols else pd.DataFrame()
+
 def calculate_financial_ratios(df):
     ratios = {}
     try:
-        # Common column name guesses for financial statements
-        current_assets = df.filter(regex="current.*asset", axis=1, case=False).iloc[:,0] if not df.filter(regex="current.*asset", axis=1, case=False).empty else np.nan
-        total_assets = df.filter(regex="total.*asset", axis=1, case=False).iloc[:,0] if not df.filter(regex="total.*asset", axis=1, case=False).empty else np.nan
-        current_liabilities = df.filter(regex="current.*liab", axis=1, case=False).iloc[:,0] if not df.filter(regex="current.*liab", axis=1, case=False).empty else np.nan
-        total_liabilities = df.filter(regex="total.*liab", axis=1, case=False).iloc[:,0] if not df.filter(regex="total.*liab", axis=1, case=False).empty else np.nan
-        equity = df.filter(regex="total.*equity", axis=1, case=False).iloc[:,0] if not df.filter(regex="total.*equity", axis=1, case=False).empty else np.nan
-        revenue = df.filter(regex="revenue|sales", axis=1, case=False).iloc[:,0] if not df.filter(regex="revenue|sales", axis=1, case=False).empty else np.nan
-        net_income = df.filter(regex="net.*income|profit", axis=1, case=False).iloc[:,0] if not df.filter(regex="net.*income|profit", axis=1, case=False).empty else np.nan
+        # Use helper for regex, case-insensitive matching
+        current_assets = filter_regex_case_insensitive(df, "current.*asset")
+        total_assets = filter_regex_case_insensitive(df, "total.*asset")
+        current_liabilities = filter_regex_case_insensitive(df, "current.*liab")
+        total_liabilities = filter_regex_case_insensitive(df, "total.*liab")
+        equity = filter_regex_case_insensitive(df, "total.*equity")
+        revenue = filter_regex_case_insensitive(df, "revenue|sales")
+        net_income = filter_regex_case_insensitive(df, "net.*income|profit")
+
+        # Use first column if found
+        current_assets = current_assets.iloc[:,0] if not current_assets.empty else np.nan
+        total_assets = total_assets.iloc[:,0] if not total_assets.empty else np.nan
+        current_liabilities = current_liabilities.iloc[:,0] if not current_liabilities.empty else np.nan
+        total_liabilities = total_liabilities.iloc[:,0] if not total_liabilities.empty else np.nan
+        equity = equity.iloc[:,0] if not equity.empty else np.nan
+        revenue = revenue.iloc[:,0] if not revenue.empty else np.nan
+        net_income = net_income.iloc[:,0] if not net_income.empty else np.nan
 
         # Calculating ratios
-        ratios['Current Ratio'] = (current_assets/current_liabilities).round(2) if not (np.isnan(current_assets).any() or np.isnan(current_liabilities).any()) else "N/A"
-        ratios['Debt to Equity Ratio'] = (total_liabilities/equity).round(2) if not (np.isnan(total_liabilities).any() or np.isnan(equity).any()) else "N/A"
-        ratios['Return on Assets (ROA)'] = (net_income/total_assets).round(2) if not (np.isnan(net_income).any() or np.isnan(total_assets).any()) else "N/A"
-        ratios['Return on Equity (ROE)'] = (net_income/equity).round(2) if not (np.isnan(net_income).any() or np.isnan(equity).any()) else "N/A"
-        ratios['Net Profit Margin'] = (net_income/revenue).round(2) if not (np.isnan(net_income).any() or np.isnan(revenue).any()) else "N/A"
-        ratios['Equity Ratio'] = (equity/total_assets).round(2) if not (np.isnan(equity).any() or np.isnan(total_assets).any()) else "N/A"
+        ratios['Current Ratio'] = (current_assets/current_liabilities).round(2) if not (isinstance(current_assets, float) and np.isnan(current_assets)) and not (isinstance(current_liabilities, float) and np.isnan(current_liabilities)) else "N/A"
+        ratios['Debt to Equity Ratio'] = (total_liabilities/equity).round(2) if not (isinstance(total_liabilities, float) and np.isnan(total_liabilities)) and not (isinstance(equity, float) and np.isnan(equity)) else "N/A"
+        ratios['Return on Assets (ROA)'] = (net_income/total_assets).round(2) if not (isinstance(net_income, float) and np.isnan(net_income)) and not (isinstance(total_assets, float) and np.isnan(total_assets)) else "N/A"
+        ratios['Return on Equity (ROE)'] = (net_income/equity).round(2) if not (isinstance(net_income, float) and np.isnan(net_income)) and not (isinstance(equity, float) and np.isnan(equity)) else "N/A"
+        ratios['Net Profit Margin'] = (net_income/revenue).round(2) if not (isinstance(net_income, float) and np.isnan(net_income)) and not (isinstance(revenue, float) and np.isnan(revenue)) else "N/A"
+        ratios['Equity Ratio'] = (equity/total_assets).round(2) if not (isinstance(equity, float) and np.isnan(equity)) and not (isinstance(total_assets, float) and np.isnan(total_assets)) else "N/A"
     except Exception as e:
         st.warning(f"Error calculating ratios: {e}")
 
@@ -56,7 +71,6 @@ def calculate_financial_ratios(df):
 def plot_metrics(df):
     st.subheader("Key Metrics Over Time")
     date_col = None
-    # Try to find a date column
     for col in df.columns:
         if "date" in col.lower() or "year" in col.lower():
             date_col = col
@@ -82,7 +96,7 @@ def plot_correlation(df):
         st.info("Not enough numeric columns for correlation matrix.")
 
 def anomaly_detection(df):
-    st.subheader("ML-based Anomaly Detection (Isolation Forest, KMeans, PCA)")
+    st.subheader("ML-based Anomaly Detection (Isolation Forest, KMeans, PCA, Z-score)")
     numeric_df = df.select_dtypes(include='number').dropna(axis=1, how='all')
     anomaly_flags = pd.DataFrame(index=df.index)
     results = {}
@@ -110,18 +124,33 @@ def anomaly_detection(df):
         anomaly_flags['pca'] = ((z_scores > 3).any(axis=1)).astype(int)
         results['PCA Outliers'] = anomaly_flags['pca'].sum()
 
+        # Z-score anomaly detection per column
+        zscore_cols = {}
+        for col in numeric_df.columns:
+            z = np.abs((numeric_df[col] - numeric_df[col].mean()) / numeric_df[col].std())
+            zscore_cols[col] = (z > 3)
+            anomaly_flags[f'zscore_{col}'] = (z > 3).astype(int)
+        results['Z-score (any column)'] = int(any(flag.sum() > 0 for flag in zscore_cols.values()))
+
         # Show results
-        outlier_rows = df[(anomaly_flags['iso'] == -1) | (anomaly_flags['kmeans'] == 1) | (anomaly_flags['pca'] == 1)]
         st.write("Anomaly Detection Summary:")
         st.write(results)
+
+        # Display rows flagged by any method
+        any_anomaly = (anomaly_flags.sum(axis=1) > 0)
+        outlier_rows = df[any_anomaly]
         st.write("Rows flagged as anomalies by any method:")
         st.dataframe(outlier_rows)
         st.markdown("**Visual: PCA Scatterplot of Outliers**")
         fig, ax = plt.subplots()
-        ax.scatter(X_pca[:,0], X_pca[:,1], c=(anomaly_flags['iso']==-1), cmap='coolwarm', label='Isolation Forest Outlier')
+        scatter = ax.scatter(X_pca[:,0], X_pca[:,1], c=(anomaly_flags['iso']==-1), cmap='coolwarm', label='Isolation Forest Outlier')
         ax.set_xlabel('PCA1')
         ax.set_ylabel('PCA2')
         st.pyplot(fig)
+
+        # More granular anomaly summary per row
+        st.subheader("Granular Anomaly Flags Table")
+        st.write(anomaly_flags)
     else:
         st.info("Not enough numeric data for robust anomaly detection.")
 
@@ -143,51 +172,10 @@ if uploaded_file:
         plot_metrics(df)
         plot_correlation(df)
 
-        # --- ML Anomaly Detection ---
+        # --- ML Anomaly Detection (Granular) ---
         anomaly_flags = anomaly_detection(df)
-
-        # --- Due Diligence AI Analysis ---
-        st.header("AI Financial Due Diligence & Insights")
-        default_prompt = (
-            "You are a seasoned financial due diligence expert. "
-            "Analyze the following financial statement data for risks, fraud indicators, financial health, key trends, and any anomalies. "
-            "Report on liquidity, leverage, profitability, and solvency using all available metrics and ratios. "
-            "Comment on trends, outliers, and any suspicious data points. "
-            "Provide an overall assessment and any recommendations.\n\n"
-            f"Financial Data (first 20 rows):\n{df.head(20).to_csv(index=False)}"
-        )
-        user_prompt = st.text_area(
-            "Optional: Add specific questions or context for AI analysis.",
-            "",
-            help="You can ask about profitability, liquidity ratios, trends, unusual figures, potential fraud, etc."
-        )
-        ai_prompt = default_prompt + ('\n\nUser question: ' + user_prompt if user_prompt.strip() else '')
-
-        if st.button("Run AI Analysis"):
-            with st.spinner("Analyzing with Gemini AI..."):
-                try:
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    response = model.generate_content(ai_prompt)
-                    st.write("## AI Due Diligence Report")
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI Error: {e}")
 
     except Exception as e:
         st.error(f"File Error: {e}")
 else:
     st.info("Please upload a CSV file to begin analysis.")
-
-# --- Prompt Playground (from provided code) ---
-st.divider()
-st.header("Gemini Prompt Playground")
-st.write("Test the GenAI model with your own prompt below.")
-prompt = st.text_input("Enter your prompt:", "Best alternatives to javascript?")
-if st.button("Generate Response"):
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
-        st.write("Response:")
-        st.write(response.text)
-    except Exception as e:
-        st.error(f"Error: {e}")
