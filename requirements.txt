@@ -6,3 +6,5 @@ matplotlib
 seaborn
 numpy
 pdfplumber
+seaborn 
+openpyxl
