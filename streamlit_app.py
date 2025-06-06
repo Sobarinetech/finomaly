@@ -156,35 +156,24 @@ def anomaly_detection(df):
     return anomaly_flags
 
 def clean_table_dataframe(df):
-    # Drop rows and columns with all NaNs or empty
     df = df.dropna(how='all')
     df = df.dropna(axis=1, how='all')
-    # Remove duplicate columns
     df = df.loc[:, ~df.columns.duplicated()]
-    # Remove empty string columns
     df = df.loc[:, [not (str(c).strip() == "" or str(c).lower().startswith("unnamed")) for c in df.columns]]
-    # Convert colnames to str
     df.columns = [str(col) for col in df.columns]
-    # Try to drop index columns by checking for columns named like 'index' or '#'
     for c in df.columns:
         if str(c).strip().lower() in ['#', 'index', 'no', 's.no']:
             df = df.drop(columns=[c])
-    # Remove columns that are just units, e.g., 'in crore', etc.
     df = df.loc[:, [not re.search(r'(crore|lakh|unit|thousand|million)', str(c), re.I) for c in df.columns]]
     return df
 
 def extract_statement_blocks(text, keyword_patterns):
-    """
-    Find likely statement blocks in text by matching start/end based on headings.
-    Returns: dict {statement_name: [block_texts]}
-    """
     blocks = {k: [] for k in keyword_patterns.keys()}
     lines = text.splitlines()
     idx = 0
     while idx < len(lines):
         for key, regex in keyword_patterns.items():
             if regex.search(lines[idx]):
-                # Look for next keyword or 50 lines max
                 start = idx
                 end = start + 1
                 while end < len(lines):
@@ -205,10 +194,6 @@ def extract_statement_blocks(text, keyword_patterns):
     return blocks
 
 def pdf_statement_tables(pdf_path):
-    """
-    More robust extraction: Look for heading in text, then extract tables from those pages.
-    Returns dict {statement: [tables]}
-    """
     statement_patterns = {
         "Balance Sheet": re.compile(r"balance\s*sheet", re.I),
         "Income Statement": re.compile(r"(income\s*statement|statement\s*of\s*profit\s*and\s*loss)", re.I),
@@ -224,19 +209,15 @@ def pdf_statement_tables(pdf_path):
                     for table in tables:
                         if table and len(table) > 2 and len(table[0]) > 2:
                             df = pd.DataFrame(table)
-                            # Try to set first non-empty row as header
                             for row_i in range(min(3, len(df))):
                                 header = [str(x).strip() for x in df.iloc[row_i].values]
-                                # Check header sanity: at least 2 headers are not empty
                                 if sum([h != "" for h in header]) >= 2:
                                     df.columns = header
                                     df = df[row_i + 1:]
                                     break
                             df = clean_table_dataframe(df)
                             statement_tables[key].append(df)
-    # Also support extraction by text block if no tables
     if not any(statement_tables.values()):
-        # Try block extraction and parse with pandas.read_fwf as fallback
         pages_text = []
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
@@ -294,9 +275,17 @@ if uploaded_files:
                         for i, df in enumerate(tables):
                             st.markdown(f"### Extracted Statement: {name} (Table {i+1})")
                             st.dataframe(df.head(20))
-                            # Try to convert numeric columns
+                            # Try to convert numeric columns (no FutureWarning)
                             for col in df.columns:
-                                df[col] = pd.to_numeric(df[col].astype(str).str.replace(",","").str.replace("$","").str.strip(), errors='ignore')
+                                try:
+                                    df[col] = pd.to_numeric(
+                                        df[col].astype(str)
+                                        .replace(",", "", regex=True)
+                                        .replace("$", "", regex=True)
+                                        .str.strip()
+                                    )
+                                except Exception:
+                                    pass
                             st.header(f"{name} - Financial Ratio Analysis")
                             ratios = calculate_financial_ratios(df)
                             for rname, value in ratios.items():
