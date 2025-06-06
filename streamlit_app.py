@@ -12,14 +12,12 @@ import re
 import tempfile
 import os
 
-# For PDF parsing
 try:
     import pdfplumber
 except ImportError:
     st.error("Please install pdfplumber: pip install pdfplumber")
     raise
 
-# --- AI Configuration (can be removed if not using AI directly) ---
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
 st.set_page_config(page_title="AI Financial Statement Analyzer", layout="wide")
@@ -36,7 +34,6 @@ st.write(
 )
 
 def filter_regex_case_insensitive(df, pattern):
-    """Helper to filter columns using regex, case-insensitive."""
     cols = [col for col in df.columns if re.search(pattern, str(col), re.IGNORECASE)]
     return df[cols] if cols else pd.DataFrame()
 
@@ -51,22 +48,20 @@ def calculate_financial_ratios(df):
         revenue = filter_regex_case_insensitive(df, "revenue|sales")
         net_income = filter_regex_case_insensitive(df, "net.*income|profit")
 
-        # Use first column if found
-        current_assets = current_assets.iloc[:,0] if not current_assets.empty else np.nan
-        total_assets = total_assets.iloc[:,0] if not total_assets.empty else np.nan
-        current_liabilities = current_liabilities.iloc[:,0] if not current_liabilities.empty else np.nan
-        total_liabilities = total_liabilities.iloc[:,0] if not total_liabilities.empty else np.nan
-        equity = equity.iloc[:,0] if not equity.empty else np.nan
-        revenue = revenue.iloc[:,0] if not revenue.empty else np.nan
-        net_income = net_income.iloc[:,0] if not net_income.empty else np.nan
+        current_assets = current_assets.iloc[:, 0] if not current_assets.empty else np.nan
+        total_assets = total_assets.iloc[:, 0] if not total_assets.empty else np.nan
+        current_liabilities = current_liabilities.iloc[:, 0] if not current_liabilities.empty else np.nan
+        total_liabilities = total_liabilities.iloc[:, 0] if not total_liabilities.empty else np.nan
+        equity = equity.iloc[:, 0] if not equity.empty else np.nan
+        revenue = revenue.iloc[:, 0] if not revenue.empty else np.nan
+        net_income = net_income.iloc[:, 0] if not net_income.empty else np.nan
 
-        # Calculating ratios
         def _ratio(a, b):
             try:
                 if isinstance(a, float) and np.isnan(a): return "N/A"
                 if isinstance(b, float) and np.isnan(b): return "N/A"
                 if (b == 0).any() if hasattr(b, 'any') else b == 0: return "N/A"
-                return (a / b).round(2)
+                return (a / b).round(2) if hasattr(a, 'round') else round(a / b, 2)
             except Exception:
                 return "N/A"
 
@@ -113,12 +108,10 @@ def anomaly_detection(df):
     results = {}
 
     if numeric_df.shape[1] > 2 and numeric_df.shape[0] > 5:
-        # Isolation Forest
         iso = IsolationForest(n_estimators=100, contamination=0.05, random_state=42)
         anomaly_flags['iso'] = iso.fit_predict(numeric_df)
         results['Isolation Forest'] = int((anomaly_flags['iso'] == -1).sum())
 
-        # KMeans Distance Outlier
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(numeric_df)
         kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
@@ -128,27 +121,22 @@ def anomaly_detection(df):
         anomaly_flags['kmeans'] = (distances > threshold).astype(int)
         results['KMeans Outliers'] = int(anomaly_flags['kmeans'].sum())
 
-        # PCA Outlier
         pca = PCA(n_components=2)
         X_pca = pca.fit_transform(X_scaled)
         z_scores = np.abs((X_pca - X_pca.mean(axis=0)) / X_pca.std(axis=0))
         anomaly_flags['pca'] = ((z_scores > 3).any(axis=1)).astype(int)
         results['PCA Outliers'] = int(anomaly_flags['pca'].sum())
 
-        # Z-score anomaly detection per column
         zscore_cols = {}
         for col in numeric_df.columns:
             z = np.abs((numeric_df[col] - numeric_df[col].mean()) / numeric_df[col].std())
             zscore_cols[col] = (z > 3)
             anomaly_flags[f'zscore_{col}'] = (z > 3).astype(int)
-        # Number of rows that are anomalous in any column
         results['Z-score (any column)'] = int(anomaly_flags[[c for c in anomaly_flags.columns if c.startswith('zscore_')]].any(axis=1).sum())
 
-        # Show results
         st.write("Anomaly Detection Summary:")
         st.write(results)
 
-        # Display rows flagged by any method
         any_anomaly = (anomaly_flags.sum(axis=1) > 0)
         outlier_rows = df[any_anomaly]
         st.write("Rows flagged as anomalies by any method:")
@@ -160,7 +148,6 @@ def anomaly_detection(df):
         ax.set_ylabel('PCA2')
         st.pyplot(fig)
 
-        # More granular anomaly summary per row
         st.subheader("Granular Anomaly Flags Table")
         st.write(anomaly_flags)
     else:
@@ -168,56 +155,105 @@ def anomaly_detection(df):
 
     return anomaly_flags
 
-def extract_statements_from_pdf(pdf_path):
+def clean_table_dataframe(df):
+    # Drop rows and columns with all NaNs or empty
+    df = df.dropna(how='all')
+    df = df.dropna(axis=1, how='all')
+    # Remove duplicate columns
+    df = df.loc[:, ~df.columns.duplicated()]
+    # Remove empty string columns
+    df = df.loc[:, [not (str(c).strip() == "" or str(c).lower().startswith("unnamed")) for c in df.columns]]
+    # Convert colnames to str
+    df.columns = [str(col) for col in df.columns]
+    # Try to drop index columns by checking for columns named like 'index' or '#'
+    for c in df.columns:
+        if str(c).strip().lower() in ['#', 'index', 'no', 's.no']:
+            df = df.drop(columns=[c])
+    # Remove columns that are just units, e.g., 'in crore', etc.
+    df = df.loc[:, [not re.search(r'(crore|lakh|unit|thousand|million)', str(c), re.I) for c in df.columns]]
+    return df
+
+def extract_statement_blocks(text, keyword_patterns):
     """
-    Extract tables for Balance Sheet, Income Statement, Cash Flow from an annual report PDF.
-    Returns a dict of {statement_name: dataframe}
+    Find likely statement blocks in text by matching start/end based on headings.
+    Returns: dict {statement_name: [block_texts]}
+    """
+    blocks = {k: [] for k in keyword_patterns.keys()}
+    lines = text.splitlines()
+    idx = 0
+    while idx < len(lines):
+        for key, regex in keyword_patterns.items():
+            if regex.search(lines[idx]):
+                # Look for next keyword or 50 lines max
+                start = idx
+                end = start + 1
+                while end < len(lines):
+                    found_next = False
+                    for other_key, other_re in keyword_patterns.items():
+                        if other_key != key and other_re.search(lines[end]):
+                            found_next = True
+                            break
+                    if found_next or (end - start > 50):
+                        break
+                    end += 1
+                content = "\n".join(lines[start:end])
+                if len(content.strip()) > 0:
+                    blocks[key].append(content)
+                idx = end
+                break
+        idx += 1
+    return blocks
+
+def pdf_statement_tables(pdf_path):
+    """
+    More robust extraction: Look for heading in text, then extract tables from those pages.
+    Returns dict {statement: [tables]}
     """
     statement_patterns = {
-        "balance_sheet": re.compile(r"balance\s*sheet", re.I),
-        "income_statement": re.compile(r"(income\s*statement|statement\s*of\s*profit\s*and\s*loss)", re.I),
-        "cash_flow": re.compile(r"cash\s*flow", re.I)
+        "Balance Sheet": re.compile(r"balance\s*sheet", re.I),
+        "Income Statement": re.compile(r"(income\s*statement|statement\s*of\s*profit\s*and\s*loss)", re.I),
+        "Cash Flow": re.compile(r"cash\s*flow", re.I)
     }
-    statements = {}
+    statement_tables = {k: [] for k in statement_patterns.keys()}
     with pdfplumber.open(pdf_path) as pdf:
-        current_statement = None
-        tables_buffer = []
-        for page in pdf.pages:
+        for i, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
-            for key, pattern in statement_patterns.items():
-                if pattern.search(text):
-                    current_statement = key
-                    tables_buffer = []
-                    break
-            if current_statement is not None:
-                tables = page.extract_tables()
-                for table in tables:
-                    if table and len(table) > 2 and len(table[0]) > 2:
-                        try:
+            for key, regex in statement_patterns.items():
+                if regex.search(text):
+                    tables = page.extract_tables()
+                    for table in tables:
+                        if table and len(table) > 2 and len(table[0]) > 2:
                             df = pd.DataFrame(table)
-                            # Fix: always make header row string
-                            header = [str(x) for x in df.iloc[0].values]
-                            df.columns = header
-                            df = df[1:]
-                            df.columns = [str(col) for col in df.columns]
-                            df = df.loc[:, ~df.columns.duplicated()]
-                            df = df.dropna(axis=1, how='all')
-                            tables_buffer.append(df)
-                        except Exception:
-                            continue
-            if current_statement is not None and tables_buffer:
-                next_page_text = ""
-                if page.page_number < len(pdf.pages):
-                    next_page_text = pdf.pages[page.page_number].extract_text() or ""
-                if not statement_patterns[current_statement].search(next_page_text):
-                    combined = pd.concat(tables_buffer, axis=0, ignore_index=True)
-                    combined.columns = [str(col) for col in combined.columns]
-                    statements[current_statement] = combined
-                    current_statement = None
-                    tables_buffer = []
-    return statements
+                            # Try to set first non-empty row as header
+                            for row_i in range(min(3, len(df))):
+                                header = [str(x).strip() for x in df.iloc[row_i].values]
+                                # Check header sanity: at least 2 headers are not empty
+                                if sum([h != "" for h in header]) >= 2:
+                                    df.columns = header
+                                    df = df[row_i + 1:]
+                                    break
+                            df = clean_table_dataframe(df)
+                            statement_tables[key].append(df)
+    # Also support extraction by text block if no tables
+    if not any(statement_tables.values()):
+        # Try block extraction and parse with pandas.read_fwf as fallback
+        pages_text = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                pages_text.append(page.extract_text() or "")
+        full_text = "\n".join(pages_text)
+        blocks = extract_statement_blocks(full_text, statement_patterns)
+        for key, blocklist in blocks.items():
+            for block in blocklist:
+                try:
+                    df = pd.read_fwf(pd.io.common.StringIO(block), header=None)
+                    df = clean_table_dataframe(df)
+                    if df.shape[1] > 2:
+                        statement_tables[key].append(df)
+                except Exception:
+                    pass
+    return statement_tables
 
-# --- File Upload (CSV or PDF) ---
 uploaded_files = st.file_uploader(
     "Upload your financial statement(s) (CSV or PDF, multiple allowed)", 
     type=["csv", "pdf"], 
@@ -229,58 +265,45 @@ if uploaded_files:
         st.divider()
         st.subheader(f"Processing: {uploaded_file.name}")
 
-        # --- CSV ---
         if uploaded_file.name.lower().endswith('.csv'):
             try:
                 df = pd.read_csv(uploaded_file)
                 st.write("Preview of uploaded data:")
                 st.dataframe(df.head())
-
-                # --- Analysis: Financial Ratios ---
                 st.header("Financial Ratio Analysis")
                 ratios = calculate_financial_ratios(df)
                 for name, value in ratios.items():
                     st.write(f"**{name}:** {value}")
-
-                # --- Visualizations ---
                 plot_metrics(df)
                 plot_correlation(df)
-
-                # --- ML Anomaly Detection (Granular) ---
                 anomaly_flags = anomaly_detection(df)
-
             except Exception as e:
                 st.error(f"File Error: {e}")
 
-        # --- PDF ---
         elif uploaded_file.name.lower().endswith('.pdf'):
-            # Save PDF to temp file for pdfplumber
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
                 tmpfile.write(uploaded_file.read())
                 tmp_pdf_path = tmpfile.name
 
             try:
-                statements = extract_statements_from_pdf(tmp_pdf_path)
-                if not statements:
+                statement_tables = pdf_statement_tables(tmp_pdf_path)
+                if not any(statement_tables.values()):
                     st.warning("No recognizable statements found in PDF. Please ensure the PDF contains tables for Balance Sheet, Income Statement, or Cash Flow.")
                 else:
-                    for name, df in statements.items():
-                        df.columns = [str(col) for col in df.columns]
-                        st.markdown(f"### Extracted Statement: {name.replace('_', ' ').title()}")
-                        st.dataframe(df.head(20))
-
-                        # Try to convert numeric columns
-                        for col in df.columns:
-                            df[col] = pd.to_numeric(df[col].astype(str).str.replace(",","").str.replace("$","").str.strip(), errors='ignore')
-
-                        st.header(f"{name.replace('_', ' ').title()} - Financial Ratio Analysis")
-                        ratios = calculate_financial_ratios(df)
-                        for rname, value in ratios.items():
-                            st.write(f"**{rname}:** {value}")
-
-                        plot_metrics(df)
-                        plot_correlation(df)
-                        anomaly_flags = anomaly_detection(df)
+                    for name, tables in statement_tables.items():
+                        for i, df in enumerate(tables):
+                            st.markdown(f"### Extracted Statement: {name} (Table {i+1})")
+                            st.dataframe(df.head(20))
+                            # Try to convert numeric columns
+                            for col in df.columns:
+                                df[col] = pd.to_numeric(df[col].astype(str).str.replace(",","").str.replace("$","").str.strip(), errors='ignore')
+                            st.header(f"{name} - Financial Ratio Analysis")
+                            ratios = calculate_financial_ratios(df)
+                            for rname, value in ratios.items():
+                                st.write(f"**{rname}:** {value}")
+                            plot_metrics(df)
+                            plot_correlation(df)
+                            anomaly_flags = anomaly_detection(df)
             except Exception as e:
                 st.error(f"PDF Extraction Error: {e}")
             finally:
