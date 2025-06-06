@@ -37,7 +37,7 @@ st.write(
 
 def filter_regex_case_insensitive(df, pattern):
     """Helper to filter columns using regex, case-insensitive."""
-    cols = [col for col in df.columns if re.search(pattern, col, re.IGNORECASE)]
+    cols = [col for col in df.columns if re.search(pattern, str(col), re.IGNORECASE)]
     return df[cols] if cols else pd.DataFrame()
 
 def calculate_financial_ratios(df):
@@ -84,7 +84,7 @@ def plot_metrics(df):
     st.subheader("Key Metrics Over Time")
     date_col = None
     for col in df.columns:
-        if "date" in col.lower() or "year" in col.lower():
+        if isinstance(col, str) and ("date" in col.lower() or "year" in col.lower()):
             date_col = col
             break
     if date_col:
@@ -189,33 +189,29 @@ def extract_statements_from_pdf(pdf_path):
                     current_statement = key
                     tables_buffer = []
                     break
-            # If we're in a statement, try to extract tables
             if current_statement is not None:
                 tables = page.extract_tables()
                 for table in tables:
-                    # Filter out silly tables
                     if table and len(table) > 2 and len(table[0]) > 2:
                         try:
                             df = pd.DataFrame(table)
-                            # Try to use first row as header if it's text
-                            if df.iloc[0].apply(lambda x: isinstance(x, str)).all():
-                                df.columns = df.iloc[0]
-                                df = df[1:]
-                            # Clean empty columns
+                            # Fix: always make header row string
+                            header = [str(x) for x in df.iloc[0].values]
+                            df.columns = header
+                            df = df[1:]
+                            df.columns = [str(col) for col in df.columns]
                             df = df.loc[:, ~df.columns.duplicated()]
                             df = df.dropna(axis=1, how='all')
                             tables_buffer.append(df)
                         except Exception:
                             continue
-            # If we find a new statement or reach end, consolidate
             if current_statement is not None and tables_buffer:
-                # Heuristic: if next page doesn't have the statement name, stop adding
                 next_page_text = ""
                 if page.page_number < len(pdf.pages):
                     next_page_text = pdf.pages[page.page_number].extract_text() or ""
                 if not statement_patterns[current_statement].search(next_page_text):
-                    # Merge all tables (row-wise)
                     combined = pd.concat(tables_buffer, axis=0, ignore_index=True)
+                    combined.columns = [str(col) for col in combined.columns]
                     statements[current_statement] = combined
                     current_statement = None
                     tables_buffer = []
@@ -269,6 +265,7 @@ if uploaded_files:
                     st.warning("No recognizable statements found in PDF. Please ensure the PDF contains tables for Balance Sheet, Income Statement, or Cash Flow.")
                 else:
                     for name, df in statements.items():
+                        df.columns = [str(col) for col in df.columns]
                         st.markdown(f"### Extracted Statement: {name.replace('_', ' ').title()}")
                         st.dataframe(df.head(20))
 
